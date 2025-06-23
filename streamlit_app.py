@@ -160,4 +160,4 @@ if st.button("🚀 使用 Selenium 开始搜索"):
             st.error("未能抓取到任何商品信息，请查看上方的日志分析原因。")
         
 st.markdown("---")
-st.markdown("技术说明：此应用通过 `Selenium` 模拟浏览器，从分页器中提取URL进行智能翻页，并从渲染后的 `ld+json` 脚本中提取数据。")
+st.markdown("技术说明： 此应用通过 `Selenium` 模拟浏览器，从分页器中提取URL进行智能翻页，并从渲染后的 `ld+json` 脚本中提取数据。")
