@@ -182,7 +182,7 @@ if st.button("🚀 开始搜索 (抓取全部分页)"):
                     "链接": st.column_config.LinkColumn("详情链接", display_text="🔗 查看商品", width="small")
                 }, hide_index=True, use_container_width=True)
 
-            # 如果有重复项，则在展开器中显示
+            # 如果有重复项，则在展开器中显示 
             if not duplicate_df.empty:
                 with st.expander(f"查看 {len(duplicate_df)} 条重复的商品信息"):
                     st.subheader("重复抓取的商品信息")
