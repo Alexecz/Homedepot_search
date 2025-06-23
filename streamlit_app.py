@@ -10,25 +10,25 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 
-# --- 核心抓取逻辑 (最终策略：直接解析ld+json脚本) ---
-def scrape_homedepot_page(query, page_num=1):
+# --- 核心抓取逻辑 (智能翻页) ---
+def scrape_homedepot_with_selenium(query, max_pages_to_scrape):
     """
-    使用Selenium驱动浏览器，等待并解析包含商品数据的ld+json脚本。
-    这是针对当前网站结构最可靠的方法。
+    使用Selenium驱动浏览器，通过模拟点击“Next”按钮进行智能翻页抓取。
 
     Args:
         query (str): 搜索关键词。
-        page_num (int): 要抓取的页码。
+        max_pages_to_scrape (int): 本次运行最多抓取的页面数。
 
     Returns:
-        list: 包含该页面商品信息的字典列表，或在出错时返回None。
+        list: 包含所有页面商品信息的字典列表。
     """
-    search_url = f"https://www.homedepot.com/s/{query.replace(' ', '%20')}?page={page_num}"
+    search_url = f"https://www.homedepot.com/s/{query.replace(' ', '%20')}"
+    all_results = []
     
     st.write("---")
-    st.write(f"⚙️ **正在处理第 {page_num} 页...**")
+    st.write("⚙️ **Selenium 自动化流程启动...**")
     
     driver = None
     try:
@@ -38,78 +38,101 @@ def scrape_homedepot_page(query, page_num=1):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument(f"--user-data-dir=/tmp/selenium_user_data_{int(time.time())}_{page_num}")
+        options.add_argument(f"--user-data-dir=/tmp/selenium_user_data_{int(time.time())}")
         options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         
         service = Service()
         driver = webdriver.Chrome(service=service, options=options)
         
-        st.write(f"  > 浏览器正在访问: {search_url}")
+        st.write(f"  > 浏览器正在访问初始页面: {search_url}")
         driver.get(search_url)
 
-        # 新的等待策略：精确等待包含SEO和商品数据的ld+json脚本标签
-        st.write("  > 正在等待目标数据脚本 (`thd-helmet__script--browseSearchStructuredData`) 加载...")
-        wait = WebDriverWait(driver, 30)
-        wait.until(
-            EC.presence_of_element_located((By.ID, "thd-helmet__script--browseSearchStructuredData"))
-        )
-        st.success("   > 目标数据脚本已加载！")
+        current_page = 1
+        while True:
+            st.write(f"--- \n⚙️ **正在处理第 {current_page} 页...**")
+            wait = WebDriverWait(driver, 30)
+            
+            try:
+                # 1. 等待当前页数据加载
+                st.write("  > 等待目标数据脚本加载...")
+                wait.until(EC.presence_of_element_located((By.ID, "thd-helmet__script--browseSearchStructuredData")))
+                st.success("   > 目标数据脚本已加载！")
 
-        html_source = driver.page_source
-        soup = BeautifulSoup(html_source, 'html.parser')
-        
-        script_tag = soup.find('script', {'id': 'thd-helmet__script--browseSearchStructuredData', 'type': 'application/ld+json'})
-        
-        if not script_tag:
-            st.error("严重错误：页面已加载，但未能找到 'thd-helmet__script--browseSearchStructuredData' 数据块。")
-            return []
+                # 2. 解析数据
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+                script_tag = soup.find('script', {'id': 'thd-helmet__script--browseSearchStructuredData', 'type': 'application/ld+json'})
+                
+                if not script_tag:
+                    st.warning(f"第 {current_page} 页未找到数据，可能已是最后一页。")
+                    break
 
-        json_data = json.loads(script_tag.string)
-        
-        products_list = []
-        if isinstance(json_data, list) and len(json_data) > 0:
-            # 数据路径: [0] -> 'mainEntity' -> 'offers' -> 'itemOffered'
-            products_list = json_data[0].get('mainEntity', {}).get('offers', {}).get('itemOffered', [])
-        
-        if not products_list:
-            st.warning(f"第 {page_num} 页未解析到产品，可能已是最后一页。")
-            return []
+                json_data = json.loads(script_tag.string)
+                products_list = json_data[0].get('mainEntity', {}).get('offers', {}).get('itemOffered', [])
+                
+                if not products_list:
+                    st.info(f"第 {page_num} 页未解析到产品，抓取结束。")
+                    break
+                
+                st.write(f"  > **成功解析到 {len(products_list)} 个产品!**")
+                for product in products_list:
+                    name = product.get('name', 'N/A')
+                    offers = product.get('offers', {})
+                    price = offers.get('price', 'N/A') if isinstance(offers, dict) else 'N/A'
+                    link = offers.get('url', '#') if isinstance(offers, dict) else '#'
+                    image_url = product.get('image')
 
-        st.write(f"  > **成功解析到 {len(products_list)} 个产品!** 开始提取信息...")
-        page_results = []
-        for product in products_list:
-            name = product.get('name', 'N/A')
-            offers = product.get('offers', {})
-            price = offers.get('price', 'N/A') if isinstance(offers, dict) else 'N/A'
-            link = offers.get('url', '#') if isinstance(offers, dict) else '#'
-            image_url = product.get('image')
+                    if name != 'N/A':
+                        all_results.append({
+                            'name': name, 'price': price, 'link': link, 
+                            'image_url': image_url or 'https://placehold.co/100x100/e2e8f0/333333?text=No+Image'
+                        })
 
-            if name != 'N/A':
-                page_results.append({
-                    'name': name, 'price': price, 'link': link, 
-                    'image_url': image_url or 'https://placehold.co/100x100/e2e8f0/333333?text=No+Image'
-                })
-        
-        return page_results
+            except TimeoutException:
+                st.error(f"页面加载超时（第 {current_page} 页）。")
+                break # 如果超时，则中断整个循环
 
-    except TimeoutException:
-        st.error(f"页面加载超时（第 {page_num} 页）。没有检测到目标数据脚本。")
-        st.info("这可能意味着页面结构发生了重大变化，或被反爬虫机制拦截。")
-        return None
+            # 3. 检查是否达到最大页数限制
+            if current_page >= max_pages_to_scrape:
+                st.info(f"已达到设定的最大抓取页数 ({max_pages_to_scrape})。")
+                break
+            
+            # 4. 寻找并点击“Next”按钮
+            try:
+                st.write("  > 正在寻找'下一页'按钮...")
+                # 使用更可靠的 testid 来定位翻页按钮
+                next_button = driver.find_element(By.CSS_SELECTOR, 'a[data-testid="pagination-link-next"]')
+                
+                # 获取一个页面上的旧元素，用于判断页面是否刷新
+                html_element = driver.find_element(By.TAG_NAME, "html")
+
+                st.write(f"  > 找到 'Next' 按钮，点击进入第 {current_page + 1} 页...")
+                next_button.click()
+
+                # 等待页面刷新（通过判断旧的html元素是否已“过时”）
+                st.write("  > 等待页面刷新...")
+                wait.until(EC.staleness_of(html_element))
+
+                current_page += 1
+
+            except NoSuchElementException:
+                st.success("✅ 未找到 'Next' 按钮，已到达最后一页，抓取结束。")
+                break # 找不到按钮，说明是最后一页，正常结束
+    
     except Exception as e:
         st.error(f"抓取过程中发生未知错误: {e}")
-        return None
     finally:
+        st.write("--- \n🏁 **所有抓取任务完成，关闭浏览器驱动。**")
         if driver:
-            st.write("  > 操作完成，关闭浏览器驱动。")
             driver.quit()
+            
+    return all_results
 
 # --- Streamlit 应用界面 ---
 st.set_page_config(page_title="Home Depot Selenium 爬虫", layout="wide")
-st.title("🛒 Home Depot 商品抓取工具 (最终版)")
+st.title("🛒 Home Depot 商品抓取工具 (智能翻页版)")
 
 search_query = st.text_input("请输入搜索关键词:", "milwaukee")
-num_pages = st.number_input("要抓取的页数:", min_value=1, max_value=10, value=2, help="建议不要一次性抓取太多页，以避免被封禁。")
+max_pages = st.number_input("最多抓取的页数:", min_value=1, max_value=10, value=3, help="设定一个抓取上限，以避免运行时间过长或被封禁。")
 
 if st.button("🚀 使用 Selenium 开始搜索"):
     if not search_query:
@@ -117,18 +140,7 @@ if st.button("🚀 使用 Selenium 开始搜索"):
     else:
         all_scraped_data = []
         with st.spinner(f"正在启动Selenium并搜索 '{search_query}'..."):
-            for i in range(1, num_pages + 1):
-                page_data = scrape_homedepot_page(search_query, i)
-                if page_data is None:
-                    st.error("抓取过程中断。")
-                    break
-                if not page_data:
-                    st.info("已到达最后一页或当前页无数据，抓取结束。")
-                    break
-                all_scraped_data.extend(page_data)
-                if i < num_pages:
-                    st.write("  > 等待2秒后翻页...")
-                    time.sleep(2) 
+            all_scraped_data = scrape_homedepot_with_selenium(search_query, max_pages)
 
         if all_scraped_data:
             st.success(f"🎉 **抓取完成！共获得 {len(all_scraped_data)} 条商品信息！**")
@@ -155,4 +167,4 @@ if st.button("🚀 使用 Selenium 开始搜索"):
             st.error("未能抓取到任何商品信息，请查看上方的日志分析原因。")
         
 st.markdown("---")
-st.markdown("技术说明：此应用使用 `Selenium` 驱动在后台运行的 `Chrome` 浏览器，并从渲染后的 `ld+json` 脚本中提取数据。")
+st.markdown("技术说明：此应用通过 `Selenium` 模拟浏览器点击“下一页”按钮进行智能翻页，并从渲染后的 `ld+json` 脚本中提取数据。")
