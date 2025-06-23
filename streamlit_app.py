@@ -14,11 +14,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 from selenium_stealth import stealth # 导入stealth
 
-# --- 核心抓取逻辑 (高级反侦测版) ---
+# --- 核心抓取逻辑 (高级反侦测版，修正了解析逻辑) ---
 def scrape_homedepot_with_selenium(query):
     """
     使用Selenium Stealth驱动浏览器，模拟真人用户行为，进行全自动翻页抓取。
-
+    本版本只解析页面中存在的ld+json数据块。
     Args:
         query (str): 搜索关键词。
 
@@ -39,14 +39,12 @@ def scrape_homedepot_with_selenium(query):
         options.add_argument("--window-size=1920,1080")
         options.add_argument(f"--user-data-dir=/tmp/selenium_user_data_{int(time.time())}")
         
-        # 隐藏自动化特征
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
         service = Service()
         driver = webdriver.Chrome(service=service, options=options)
         
-        # --- 应用 Selenium Stealth ---
         status_placeholder.info(f"🚀 应用高级反侦测模式 (Stealth)...")
         stealth(driver,
               languages=["en-US", "en"],
@@ -56,7 +54,6 @@ def scrape_homedepot_with_selenium(query):
               renderer="Intel Iris OpenGL Engine",
               fix_hairline=True,
               )
-        # ---------------------------
         
         search_url = f"https://www.homedepot.com/s/{query.replace(' ', '%20')}"
         status_placeholder.info(f"🕵️ 浏览器已伪装，正在访问初始页面...")
@@ -93,49 +90,25 @@ def scrape_homedepot_with_selenium(query):
                 if not products_list: break
                 
                 for product in products_list:
-                    item_data = product.get('item', product)
-                    name = item_data.get('productLabel', item_data.get('name', 'N/A'))
+                    # --- 修正后的、只针对ld+json的解析逻辑 ---
+                    name = product.get('name', 'N/A')
+                    offers_info = product.get('offers', {})
                     
-                    # 提取详细价格
-                    pricing_info = item_data.get('pricing', item_data.get('offers', {}))
-                    original_price = None
                     current_price = None
+                    if isinstance(offers_info, dict):
+                        current_price = offers_info.get('price')
 
-                    if isinstance(pricing_info, dict):
-                        # __NEXT_DATA__ 结构
-                        if 'originalPrice' in pricing_info and isinstance(pricing_info['originalPrice'], dict):
-                            original_price = pricing_info['originalPrice'].get('price')
-                        if 'specialPrice' in pricing_info and isinstance(pricing_info['specialPrice'], dict):
-                             current_price = pricing_info['specialPrice'].get('price')
-                        
-                        # 如果没有special_price，则current_price就是original_price
-                        if not current_price:
-                            current_price = original_price if original_price else pricing_info.get('price')
-                        
-                        # 如果有special_price，但original_price和它一样，则不算有折扣
-                        if original_price == current_price:
-                            original_price = None
-                            
-                    # ld+json 结构 (备用)
-                    else:
-                        current_price = pricing_info.get('price')
-
-
-                    link = item_data.get('url', '#')
-                    if link.startswith('/'):
-                        link = 'https://www.homedepot.com' + link
-
-                    image_url = item_data.get('image')
-                    if not image_url and 'media' in item_data:
-                        images = item_data.get('media', {}).get('images', [])
-                        if images:
-                            image_url = images[0].get('url')
+                    # ld+json中没有明确区分原价和现售价，我们只取price字段
+                    original_price = None 
+                    
+                    link = offers_info.get('url', '#') if isinstance(offers_info, dict) else '#'
+                    image_url = product.get('image')
 
                     if name != 'N/A':
                         all_results.append({
                             'name': name, 
                             'current_price': current_price,
-                            'original_price': original_price,
+                            'original_price': original_price, # 此字段将为空
                             'link': link, 
                             'image_url': image_url or 'https://placehold.co/100x100/e2e8f0/333333?text=No+Image'
                         })
