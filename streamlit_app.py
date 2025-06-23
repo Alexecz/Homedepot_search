@@ -47,7 +47,7 @@ def scrape_homedepot_page(query, page_num=1):
         st.write(f"  > 浏览器正在访问: {search_url}")
         driver.get(search_url)
 
-        # 等待 __NEXT_DATA__ 脚本标签加载完成
+        # 等待 __NEXT_DATA__ 脚本标签加载完成.
         st.write("  > 等待页面动态数据加载...")
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.ID, "__NEXT_DATA__"))
