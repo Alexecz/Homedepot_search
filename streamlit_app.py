@@ -12,11 +12,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
-# --- 核心抓取逻辑 (最终版) ---
+# --- 核心抓取逻辑 (最终策略：直接解析ld+json脚本) ---
 def scrape_homedepot_page(query, page_num=1):
     """
-    使用Selenium驱动浏览器，从单个搜索结果页面抓取完整的商品数据。
-    这个版本专为在Streamlit云服务器等Linux环境部署而优化。
+    使用Selenium驱动浏览器，等待并解析包含商品数据的ld+json脚本。
+    这是针对当前网站结构最可靠的方法。
 
     Args:
         query (str): 搜索关键词。
@@ -47,44 +47,42 @@ def scrape_homedepot_page(query, page_num=1):
         st.write(f"  > 浏览器正在访问: {search_url}")
         driver.get(search_url)
 
-        # 等待 __NEXT_DATA__ 脚本标签加载完成.
-        st.write("  > 等待页面动态数据加载...")
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.ID, "__NEXT_DATA__"))
+        # 新的等待策略：精确等待包含SEO和商品数据的ld+json脚本标签
+        st.write("  > 正在等待目标数据脚本 (`thd-helmet__script--browseSearchStructuredData`) 加载...")
+        wait = WebDriverWait(driver, 30)
+        wait.until(
+            EC.presence_of_element_located((By.ID, "thd-helmet__script--browseSearchStructuredData"))
         )
-        st.success("   > 关键数据已加载！")
+        st.success("   > 目标数据脚本已加载！")
 
         html_source = driver.page_source
         soup = BeautifulSoup(html_source, 'html.parser')
         
-        script_tag = soup.find('script', {'id': '__NEXT_DATA__', 'type': 'application/json'})
+        script_tag = soup.find('script', {'id': 'thd-helmet__script--browseSearchStructuredData', 'type': 'application/ld+json'})
         
         if not script_tag:
-            st.error("错误：未能找到 '__NEXT_DATA__' 数据块。")
+            st.error("严重错误：页面已加载，但未能找到 'thd-helmet__script--browseSearchStructuredData' 数据块。")
             return []
 
         json_data = json.loads(script_tag.string)
         
         products_list = []
-        page_props = json_data.get('props', {}).get('pageProps', {})
-        if page_props.get('search', {}).get('contentLayouts'):
-            content_layouts = page_props['search']['contentLayouts']
-            for layout in content_layouts:
-                if isinstance(layout, dict) and layout.get('type') == 'PRODUCT_POD' and layout.get('products'):
-                    products_list.extend(layout.get('products', []))
+        if isinstance(json_data, list) and len(json_data) > 0:
+            # 数据路径: [0] -> 'mainEntity' -> 'offers' -> 'itemOffered'
+            products_list = json_data[0].get('mainEntity', {}).get('offers', {}).get('itemOffered', [])
         
         if not products_list:
             st.warning(f"第 {page_num} 页未解析到产品，可能已是最后一页。")
             return []
 
+        st.write(f"  > **成功解析到 {len(products_list)} 个产品!** 开始提取信息...")
         page_results = []
         for product in products_list:
-            item_data = product.get('item', product)
-            name = item_data.get('productLabel', 'N/A')
-            price_info = item_data.get('pricing', {})
-            price = price_info.get('specialPrice', {}).get('price') or price_info.get('originalPrice', {}).get('price')
-            link = 'https://www.homedepot.com' + item_data.get('url', '#')
-            image_url = item_data.get('media', {}).get('images', [{}])[0].get('url')
+            name = product.get('name', 'N/A')
+            offers = product.get('offers', {})
+            price = offers.get('price', 'N/A') if isinstance(offers, dict) else 'N/A'
+            link = offers.get('url', '#') if isinstance(offers, dict) else '#'
+            image_url = product.get('image')
 
             if name != 'N/A':
                 page_results.append({
@@ -92,17 +90,18 @@ def scrape_homedepot_page(query, page_num=1):
                     'image_url': image_url or 'https://placehold.co/100x100/e2e8f0/333333?text=No+Image'
                 })
         
-        st.write(f"  > **成功解析到 {len(page_results)} 个产品!**")
         return page_results
 
     except TimeoutException:
-        st.error(f"页面加载超时（第 {page_num} 页）。可能是被反爬虫机制拦截。")
+        st.error(f"页面加载超时（第 {page_num} 页）。没有检测到目标数据脚本。")
+        st.info("这可能意味着页面结构发生了重大变化，或被反爬虫机制拦截。")
         return None
     except Exception as e:
         st.error(f"抓取过程中发生未知错误: {e}")
         return None
     finally:
         if driver:
+            st.write("  > 操作完成，关闭浏览器驱动。")
             driver.quit()
 
 # --- Streamlit 应用界面 ---
@@ -124,11 +123,12 @@ if st.button("🚀 使用 Selenium 开始搜索"):
                     st.error("抓取过程中断。")
                     break
                 if not page_data:
-                    st.info("已到达最后一页，抓取结束。")
+                    st.info("已到达最后一页或当前页无数据，抓取结束。")
                     break
                 all_scraped_data.extend(page_data)
                 if i < num_pages:
-                    time.sleep(2) # 翻页之间礼貌性等待
+                    st.write("  > 等待2秒后翻页...")
+                    time.sleep(2) 
 
         if all_scraped_data:
             st.success(f"🎉 **抓取完成！共获得 {len(all_scraped_data)} 条商品信息！**")
@@ -155,4 +155,4 @@ if st.button("🚀 使用 Selenium 开始搜索"):
             st.error("未能抓取到任何商品信息，请查看上方的日志分析原因。")
         
 st.markdown("---")
-st.markdown("技术说明：此应用使用 `Selenium` 驱动在后台运行的 `Chrome` 浏览器获取页面源码，再由 `BeautifulSoup` 和 `json` 解析数据。")
+st.markdown("技术说明：此应用使用 `Selenium` 驱动在后台运行的 `Chrome` 浏览器，并从渲染后的 `ld+json` 脚本中提取数据。")
