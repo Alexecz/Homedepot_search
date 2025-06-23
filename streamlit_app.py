@@ -12,11 +12,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 
-# --- 核心抓取逻辑 (全自动智能翻页 + 动态状态更新) ---
+# --- 核心抓取逻辑 (全自动智能翻页 + 详细价格解析) ---
 def scrape_homedepot_with_selenium(query):
     """
-    使用Selenium驱动浏览器，通过提取并导航到分页器中的URL进行全自动翻页抓取。
-    使用 st.empty() 提供简洁的动态状态更新。
+    使用Selenium驱动浏览器，通过智能翻页抓取所有页面，并从__NEXT_DATA__中解析详细价格信息。
 
     Args:
         query (str): 搜索关键词。
@@ -27,7 +26,6 @@ def scrape_homedepot_with_selenium(query):
     search_url = f"https://www.homedepot.com/s/{query.replace(' ', '%20')}"
     all_results = []
     
-    st.write("---")
     status_placeholder = st.empty() # 创建一个用于动态更新的占位符
     
     driver = None
@@ -59,7 +57,7 @@ def scrape_homedepot_with_selenium(query):
             
             try:
                 # 1. 等待当前页数据加载
-                wait.until(EC.presence_of_element_located((By.ID, "thd-helmet__script--browseSearchStructuredData")))
+                wait.until(EC.presence_of_element_located((By.ID, "__NEXT_DATA__")))
 
                 # 2. 解析数据
                 soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -67,37 +65,52 @@ def scrape_homedepot_with_selenium(query):
                 # 首次运行时，尝试获取总页数
                 if current_page == 1:
                     try:
-                        # 查找所有代表页码的链接
                         page_buttons = soup.select('nav[aria-label="Pagination Navigation"] a[aria-label*="Go to Page"]')
                         if page_buttons:
-                            # 最后一个 "Go to Page X" 链接通常就是总页数
                             last_page_num = page_buttons[-1].text.strip()
                             if last_page_num.isdigit():
                                 total_pages_str = last_page_num
                     except Exception:
-                        total_pages_str = "?" # 获取失败则保持未知
+                        total_pages_str = "?" 
 
-                script_tag = soup.find('script', {'id': 'thd-helmet__script--browseSearchStructuredData', 'type': 'application/ld+json'})
+                script_tag = soup.find('script', {'id': '__NEXT_DATA__', 'type': 'application/json'})
                 
                 if not script_tag:
                     break
 
                 json_data = json.loads(script_tag.string)
-                products_list = json_data[0].get('mainEntity', {}).get('offers', {}).get('itemOffered', [])
+                products_list = []
+                page_props = json_data.get('props', {}).get('pageProps', {})
+                if page_props.get('search', {}).get('contentLayouts'):
+                    content_layouts = page_props['search']['contentLayouts']
+                    for layout in content_layouts:
+                        if isinstance(layout, dict) and layout.get('type') == 'PRODUCT_POD' and layout.get('products'):
+                            products_list.extend(layout.get('products', []))
                 
                 if not products_list:
                     break
                 
                 for product in products_list:
-                    name = product.get('name', 'N/A')
-                    offers = product.get('offers', {})
-                    price = offers.get('price', 'N/A') if isinstance(offers, dict) else 'N/A'
-                    link = offers.get('url', '#') if isinstance(offers, dict) else '#'
-                    image_url = product.get('image')
+                    item_data = product.get('item', {})
+                    name = item_data.get('productLabel', 'N/A')
+                    pricing_info = item_data.get('pricing', {})
+                    
+                    # 提取原价和现售价
+                    original_price = pricing_info.get('originalPrice', {}).get('price')
+                    special_price = pricing_info.get('specialPrice', {}).get('price')
+
+                    current_price = special_price if special_price else original_price
+                    was_price = original_price if special_price and original_price != special_price else None
+
+                    link = 'https://www.homedepot.com' + item_data.get('url', '#')
+                    image_url = item_data.get('media', {}).get('images', [{}])[0].get('url')
 
                     if name != 'N/A':
                         all_results.append({
-                            'name': name, 'price': price, 'link': link, 
+                            'name': name, 
+                            'current_price': current_price,
+                            'original_price': was_price,
+                            'link': link, 
                             'image_url': image_url or 'https://placehold.co/100x100/e2e8f0/333333?text=No+Image'
                         })
 
@@ -127,8 +140,8 @@ def scrape_homedepot_with_selenium(query):
     return all_results
 
 # --- Streamlit 应用界面 ---
-st.set_page_config(page_title="Home Depot Selenium 爬虫", layout="wide")
-st.title("🛒 Home Depot 商品抓取工具 (全自动翻页版)")
+st.set_page_config(page_title="在线商品信息工具", layout="wide")
+st.title("🛒 在线商品信息工具")
 
 search_query = st.text_input("请输入搜索关键词:", "milwaukee")
 
@@ -141,26 +154,55 @@ if st.button("🚀 开始搜索 (抓取全部分页)"):
         if all_scraped_data:
             st.success(f"🎉 **任务结束！共获得 {len(all_scraped_data)} 条商品信息！**")
             
-            df = pd.DataFrame(all_scraped_data).drop_duplicates(subset=['name'])
-            st.info(f"去重后剩余 {len(df)} 条独立商品信息。")
+            # 分离唯一项和重复项
+            full_df = pd.DataFrame(all_scraped_data)
+            duplicates_mask = full_df.duplicated(subset=['name'], keep='first')
+            unique_df = full_df[~duplicates_mask]
+            duplicate_df = full_df[duplicates_mask]
             
-            display_df_data = [{
+            st.info(f"去重后剩余 {len(unique_df)} 条独立商品信息。")
+            
+            # 显示独立商品信息
+            st.subheader("独立商品信息")
+            display_unique_data = [{
                 "图片": row['image_url'],
                 "商品名称": row['name'],
-                "价格": f"${row['price']}" if row.get('price') else 'N/A',
+                "原价": f"${row['original_price']}" if pd.notna(row['original_price']) else " ",
+                "现售价": f"${row['current_price']}" if pd.notna(row['current_price']) else 'N/A',
                 "链接": row['link']
-            } for _, row in df.iterrows()]
+            } for _, row in unique_df.iterrows()]
             
             st.dataframe(
-                display_df_data,
+                display_unique_data,
                 column_config={
                     "图片": st.column_config.ImageColumn("图片预览", width="small"),
                     "商品名称": st.column_config.TextColumn("商品名称", width="large"),
-                    "价格": st.column_config.TextColumn("价格", width="small"),
+                    "原价": st.column_config.TextColumn("原价", width="small"),
+                    "现售价": st.column_config.TextColumn("现售价", width="small"),
                     "链接": st.column_config.LinkColumn("详情链接", display_text="🔗 查看商品", width="small")
                 }, hide_index=True, use_container_width=True)
+
+            # 如果有重复项，则在展开器中显示
+            if not duplicate_df.empty:
+                with st.expander(f"查看 {len(duplicate_df)} 条重复的商品信息"):
+                    st.subheader("重复抓取的商品信息")
+                    display_duplicate_data = [{
+                        "图片": row['image_url'],
+                        "商品名称": row['name'],
+                        "原价": f"${row['original_price']}" if pd.notna(row['original_price']) else " ",
+                        "现售价": f"${row['current_price']}" if pd.notna(row['current_price']) else 'N/A',
+                        "链接": row['link']
+                    } for _, row in duplicate_df.iterrows()]
+                    
+                    st.dataframe(
+                        display_duplicate_data,
+                        column_config={
+                            "图片": st.column_config.ImageColumn("图片预览", width="small"),
+                            "商品名称": st.column_config.TextColumn("商品名称", width="large"),
+                            "原价": st.column_config.TextColumn("原价", width="small"),
+                            "现售价": st.column_config.TextColumn("现售价", width="small"),
+                            "链接": st.column_config.LinkColumn("详情链接", display_text="🔗 查看商品", width="small")
+                        }, hide_index=True, use_container_width=True)
+            
         else:
             st.error("未能抓取到任何商品信息，请查看上方的日志分析原因。")
-        
-st.markdown("---")
-st.markdown("技术说明：此应用通过 `Selenium` 模拟浏览器，智能寻找并导航至下一页，直至最后一页，并从渲染后的 `ld+json` 脚本中提取数据。")
