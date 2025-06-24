@@ -69,13 +69,11 @@ def scrape_homedepot_with_selenium(query, max_pages_to_scrape):
                 script_tag = soup.find('script', string=re.compile(r"window\.__APOLLO_STATE__"))
                 
                 if not script_tag:
-                    st.warning(f"第 {current_page} 页未找到 __APOLLO_STATE__ 数据块。")
                     break
 
                 # 3. 精确提取并解析JSON
                 match = re.search(r'window\.__APOLLO_STATE__\s*=\s*({.*});', script_tag.string)
                 if not match:
-                    st.warning(f"第 {current_page} 页无法从脚本中正确提取JSON数据。")
                     break
                 
                 json_text = match.group(1)
@@ -95,7 +93,6 @@ def scrape_homedepot_with_selenium(query, max_pages_to_scrape):
                         if products_list: break
 
                 if not products_list:
-                    st.info(f"第 {current_page} 页未解析到产品，抓取结束。")
                     break
                 
                 for product in products_list:
@@ -145,7 +142,6 @@ st.title("🛒 在线商品信息工具")
 
 search_query = st.text_input("请输入搜索关键词:", "milwaukee")
 
-# --- 新的交互UI ---
 col1, col2 = st.columns([1, 4])
 with col1:
     limit_pages = st.checkbox("限制页数", value=False)
@@ -153,7 +149,7 @@ with col2:
     if limit_pages:
         max_pages_to_scrape = st.number_input("要抓取的页数:", min_value=1, max_value=50, value=3, key="max_pages_limited")
     else:
-        max_pages_to_scrape = 999  # 设置一个很大的数代表“全部”
+        max_pages_to_scrape = 999
         st.write("将抓取所有可用的页面。")
 
 
@@ -167,24 +163,26 @@ if st.button("🚀 开始搜索"):
             st.success(f"🎉 **任务结束！共获得 {len(all_scraped_data)} 条商品信息！**")
             
             full_df = pd.DataFrame(all_scraped_data)
-            duplicates_mask = full_df.duplicated(subset=['name'], keep='first')
-            unique_df = full_df[~duplicates_mask]
-            duplicate_df = full_df[duplicates_mask]
+            unique_df = full_df.drop_duplicates(subset=['name'], keep='first').reset_index(drop=True)
+            # 找出所有重复的行（包括第一次出现的）
+            duplicate_rows_df = full_df[full_df.duplicated(subset=['name'], keep=False)].sort_values('name').reset_index(drop=True)
             
             st.info(f"去重后剩余 {len(unique_df)} 条独立商品信息。")
             
             st.subheader("独立商品信息")
             display_unique_data = [{
+                "序号": index + 1,
                 "图片": row['image_url'],
                 "商品名称": row['name'],
                 "原价": f"${row['original_price']}" if pd.notna(row['original_price']) and row['original_price'] != row['current_price'] else " ",
                 "现售价": f"${row['current_price']}" if pd.notna(row['current_price']) else 'N/A',
                 "链接": row['link']
-            } for _, row in unique_df.iterrows()]
+            } for index, row in unique_df.iterrows()]
             
             st.dataframe(
                 display_unique_data,
                 column_config={
+                    "序号": st.column_config.NumberColumn("序号", width="small", format="%d"),
                     "图片": st.column_config.ImageColumn("图片预览", width="small"),
                     "商品名称": st.column_config.TextColumn("商品名称", width="large"),
                     "原价": st.column_config.TextColumn("原价", width="small"),
@@ -192,9 +190,27 @@ if st.button("🚀 开始搜索"):
                     "链接": st.column_config.LinkColumn("详情链接", display_text="🔗 查看商品", width="small")
                 }, hide_index=True, use_container_width=True)
 
-            if not duplicate_df.empty:
-                with st.expander(f"查看 {len(duplicate_df)} 条重复的商品信息"):
-                    st.dataframe(duplicate_df)
-            
+            if not duplicate_rows_df.empty:
+                with st.expander(f"查看 {len(duplicate_rows_df)} 条存在重复的商品信息（按名称分组）"):
+                    st.subheader("重复抓取的商品信息")
+                    display_duplicate_data = [{
+                        "序号": index + 1,
+                        "图片": row['image_url'],
+                        "商品名称 (重复项)": row['name'],
+                        "原价": f"${row['original_price']}" if pd.notna(row['original_price']) and row['original_price'] != row['current_price'] else " ",
+                        "现售价": f"${row['current_price']}" if pd.notna(row['current_price']) else 'N/A',
+                        "链接": row['link']
+                    } for index, row in duplicate_rows_df.iterrows()]
+                    
+                    st.dataframe(
+                        display_duplicate_data,
+                        column_config={
+                            "序号": st.column_config.NumberColumn("序号", width="small", format="%d"),
+                            "图片": st.column_config.ImageColumn("图片预览", width="small"),
+                            "商品名称 (重复项)": st.column_config.TextColumn("商品名称 (重复项)", width="large"),
+                            "原价": st.column_config.TextColumn("原价", width="small"),
+                            "现售价": st.column_config.TextColumn("现售价", width="small"),
+                            "链接": st.column_config.LinkColumn("详情链接", display_text="🔗 查看商品", width="small")
+                        }, hide_index=True, use_container_width=True)
         else:
             st.error("未能抓取到任何商品信息，请查看上方的日志分析原因。")
